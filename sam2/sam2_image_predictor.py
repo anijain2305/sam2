@@ -288,14 +288,56 @@ class SAM2ImagePredictor:
             point_coords, point_labels, box, mask_input, normalize_coords
         )
 
-        masks, iou_predictions, low_res_masks = self._predict(
-            unnorm_coords,
-            labels,
-            unnorm_box,
-            mask_input,
-            multimask_output,
-            return_logits=return_logits,
-        )
+        is_export = True
+        eager_output = self._predict(unnorm_coords, labels, unnorm_box, mask_input, multimask_output, return_logits=return_logits)
+        if is_export:
+            class ExportHelper(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                
+                def forward(_, *args, **kwargs):
+                    return self._predict(*args, **kwargs)
+
+
+
+            model_to_export = ExportHelper()
+            ep = torch.export.export(
+                model_to_export,
+                args=(unnorm_coords, labels, unnorm_box, mask_input, multimask_output),
+                kwargs={"return_logits" : return_logits},
+                strict=False)
+
+            print(ep)
+            exported_output = ep.module()(unnorm_coords, labels, unnorm_box, mask_input, multimask_output, return_logits=return_logits)
+            import os
+            breakpoint()
+
+            output_path = torch._inductor.aoti_compile_and_package(
+                ep,
+                args=(unnorm_coords, labels, unnorm_box, mask_input, multimask_output),
+                kwargs={"return_logits" : return_logits},
+                package_path=os.path.join(os.getcwd(), "model.pt2"),
+                inductor_configs={"pattern_matcher": False},
+            )
+
+
+            breakpoint()
+
+            model = torch._inductor.aoti_load_package(os.path.join(os.getcwd(), "model.pt2"))
+            aoti_output = model(unnorm_coords, labels, unnorm_box, mask_input, multimask_output, return_logits=return_logits)
+            breakpoint()
+
+            print(ep)
+
+        else:
+            masks, iou_predictions, low_res_masks = self._predict(
+                unnorm_coords,
+                labels,
+                unnorm_box,
+                mask_input,
+                multimask_output,
+                return_logits=return_logits,
+            )
 
         masks_np = masks.squeeze(0).float().detach().cpu().numpy()
         iou_predictions_np = iou_predictions.squeeze(0).float().detach().cpu().numpy()
